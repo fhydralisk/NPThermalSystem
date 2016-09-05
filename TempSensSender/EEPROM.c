@@ -32,6 +32,12 @@ unsigned char IapReadByte(unsigned int addr) {
 	return dat;
 }
 
+unsigned short IapReadShortBig(unsigned int addr) {
+	unsigned short ret;
+	ret = ( IapReadByte(addr) << 8 ) + IapReadByte(addr+1);
+	return ret;
+}
+
 #ifdef EEPROM_WRITE
 void IapProgramByte(unsigned int addr, unsigned char dat){
 	IAP_CONTR = ENABLE_IAP;
@@ -42,8 +48,7 @@ void IapProgramByte(unsigned int addr, unsigned char dat){
 	IAP_TRIG = 0x5a;
 	IAP_TRIG = 0xa5;
 	_nop_();
-	IapIdle();
-	uart_sendbyte(dat); 
+	IapIdle(); 
 }
 void IapEreaseSector(unsigned int addr){
 	IAP_CONTR = ENABLE_IAP;
@@ -54,5 +59,14 @@ void IapEreaseSector(unsigned int addr){
 	IAP_TRIG = 0xa5;
 	_nop_();
 	IapIdle();
+}
+void IapProgramData(unsigned int addr, unsigned char *buf, unsigned int len) {
+	unsigned int i;
+	for (i=0; i<len; i++) 
+		IapProgramByte(addr+i, buf[i]);
+}
+void IapProgramShortBig(unsigned int addr, unsigned short dat) {
+	IapProgramByte(addr, dat >> 8);
+	IapProgramByte(addr + 1, dat);
 }
 #endif
