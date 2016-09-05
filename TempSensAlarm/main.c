@@ -1,5 +1,6 @@
 #include <stc15.h>
 #include <string.h>
+#include <stdlib.h>
 #include "uart.h"
 #include "DS18b20.h"
 #include "misc.h"
@@ -40,9 +41,15 @@ unsigned char build_report_packet(char *packet, unsigned short td, unsigned shor
 #define PORT_LEN_MAX 6
 #define SSID_START_POS 0x0200
 #define HOST_START_POS 0x0400
+#define WEB_START_POS 0x0600
 
 #define HB_TIMEOUT 5
 #define ALARM_BEEP_AGAIN 300
+#define VERSION 0x0100
+
+unsigned char xdata g_buf[60];
+
+void setting_state();
 
 void set_output(unsigned char output, unsigned char state) {
 	switch (output) {
@@ -86,7 +93,7 @@ unsigned char get_profile(unsigned short *ver, unsigned short *devid, unsigned s
 	return 1;
 }
 
-void connect_wifi() {
+unsigned char connect_wifi() {	// return 1 succeed, 0 enter setting state
 	unsigned short i;
 	unsigned char len_ssid, len_pwd;
 	unsigned char xdata ssid[SSID_LEN_MAX];
@@ -105,49 +112,39 @@ void connect_wifi() {
 	ssid[i] = 0;
 	len_pwd = IapReadByte(SSID_START_POS + len_ssid + 1);
 	if (len_pwd >= PWD_LEN_MAX || len_pwd == 0) {
-		// TODO: extra
-		BEEP = 0;
-		LED_R = 0;
-		while(1);
+		// FIXME: TODO: INITSTATE, SSID_START_POS may vari.
+		// setting_state();
+		return 0;
 	}
 	for (i=0;i<len_pwd; i++)
 		pwd[i] = IapReadByte(SSID_START_POS + len_ssid + i + 2);
 	pwd[i] = 0;
 
 	while (esp8266_connect_wifi(ssid, pwd, 1) == 0); //try connect
+	return 1;
 }
 
-void connect_server() {
+unsigned char connect_server() { // same as above
 	unsigned short i;
 	unsigned char xdata host[HOST_LEN_MAX];
 	unsigned char xdata port[PORT_LEN_MAX];
 	unsigned char len_host, len_port;
 	len_host = IapReadByte(HOST_START_POS);
 	if (len_host >= HOST_LEN_MAX || len_host == 0) {
-		// TODO: extra
+		// FIXME: TODO: extra
 		// BEEP = 0;
-		LED_R = 0;
-		while(1) {
-			blink(3, 10);
-			for (i=0;i<1000;i++) {
-				delayXus(500);
-			}
-		}
+		// setting_state();
+		return 0;
 	}
 	for (i=0;i<len_host;i++)
 		host[i] = IapReadByte(HOST_START_POS + i + 1);
 	host[i] = 0;
 	len_port = IapReadByte(HOST_START_POS + len_host + 1);
 	if (len_port >= PORT_LEN_MAX || len_port == 0) {
-		// TODO: extra
+		// FIXME: TODO: extra
 		// BEEP = 0;
-		LED_R = 0;
-		while(1) {
-			blink(3, 10);
-			for (i=0;i<1000;i++) {
-				delayXus(2000);
-			}
-		}
+		// setting_state();
+		return 0;
 	}
 	for (i=0;i<len_port; i++)
 		port[i] = IapReadByte(HOST_START_POS + len_host + i + 2);
@@ -159,9 +156,10 @@ void connect_server() {
 	}
 
 	LED_R = 1;
+	return 1;
 }
 
-void init_esp8266(unsigned char reboot) {
+unsigned char init_esp8266(unsigned char reboot, unsigned char server) {  // same as above
 	unsigned short i;
 	LED_G = 1; LED_R = 1; LED_Y = 1; BEEP = 1; NTRST = 1;
 
@@ -183,22 +181,34 @@ void init_esp8266(unsigned char reboot) {
 			LED_R = 1;
 	}
 
-	LED_Y = 0;
-
-	if (esp8266_wait_gotip(1000000) == 0) {
-		// not connected	
-		connect_wifi();
+	if (server) {
+		LED_Y = 0;
+		if (esp8266_create_wifi("Alarm","", "192.168.100.1", 0))	{
+			 if (esp8266_create_server("80"))
+			 	return 1;
+		}
+		BEEP = 0;
+		while (1);
+		return 0;
+	} else {
+		LED_Y = 0;
+	
+		if (esp8266_wait_gotip(1000000) == 0) {
+			// not connected	
+			if (connect_wifi() == 0)
+				return 0;
+		}
+	
+		if (reboot == 2) BEEP = 0;
+		LED_Y = 1;
+		if  (esp8266_wait_gotip(30000)) {
+			if (reboot == 2) BEEP = 1;
+			LED_G = 0;
+		}
+	
+		// connect to server
+		return connect_server();
 	}
-
-	if (reboot == 2) BEEP = 0;
-	LED_Y = 1;
-	if  (esp8266_wait_gotip(30000)) {
-		if (reboot == 2) BEEP = 1;
-		LED_G = 0;
-	}
-
-	// connect to server
-	connect_server();
 }
 
 unsigned short construct_query_packet(unsigned char *buf, unsigned short ver, unsigned short devid, unsigned short targetid) {
@@ -337,10 +347,116 @@ void reboot() {
 	while (1);
 }
 
+void response_web(char client) {
+	unsigned short pdata web_len, i;
+	delayXus(1000);
+	web_len = IapReadByte(WEB_START_POS);
+	web_len = (web_len << 8) + IapReadByte(WEB_START_POS + 1);
+	uart_sendcstring("AT+CIPSEND=");
+	uart_sendbyte(client);
+	uart_sendbyte(',');
+	int2cstr(g_buf, web_len);
+	uart_sendcstring(g_buf);
+	uart_sendcstring("\r\n");
+	_wait_for_ok(10000);
+
+	for (i=0; i<web_len; i++)
+		uart_sendbyte(IapReadByte(WEB_START_POS + 2 + i));
+}
+
+unsigned char replace_webstr(unsigned char *buf) {
+	unsigned char i = 0;
+	while(buf[i]) {
+		if (buf[i] == '%' && buf[i+1] == '3' && (buf[i+2] == 'A' || buf[i+2] == 'a')) {
+			buf[i] = ':';
+			break;
+		}
+		i++;
+	}
+	if (buf[i]) {
+		i++;
+		while (buf[i+2]) {
+			buf[i] = buf[i+2];
+			i++;
+		}
+		buf[i] = 0;
+		return 2;
+	}
+	return 0;
+}
+
+void do_web_set(char client) {
+	unsigned char i, tuc, lens, lens2, succeeds = 0;
+	unsigned short devid, tarid;
+	for (i=0; i<5; i++) {
+		lens = uart_waitforstring(CONST_STR("="), g_buf, sizeof(g_buf), 20000);
+		g_buf[lens - 1] = 0;
+		lens2 = uart_waitforstring(CONST_STR("&"), g_buf + lens, sizeof(g_buf) - lens, 20000);
+		g_buf[lens + lens2-1] = 0;
+		if (strcmp(g_buf, "devid") == 0) {
+			devid = atoi(g_buf + lens);
+		} else if (strcmp(g_buf, "tarid") == 0) {
+			tarid = atoi(g_buf + lens);
+		} else if (strcmp(g_buf, "host") == 0) {
+			tuc = replace_webstr(g_buf+lens);
+			succeeds += _cmd_set_wifi_or_host(g_buf+lens, lens2 - tuc - 1, CMD_SET_HOST);
+		} else if (strcmp(g_buf, "wifi") == 0) {
+			tuc = replace_webstr(g_buf+lens);
+			succeeds += _cmd_set_wifi_or_host(g_buf+lens, lens2 - tuc - 1, CMD_SET_WIFI);
+		}
+	}	
+	g_buf[0] = tarid >> 8;
+	g_buf[1] = tarid;
+	succeeds += _cmd_set_profile(g_buf, 2, VERSION, devid, &tarid);
+	if (succeeds < 3) {
+		//failed
+		LED_R = 0;
+		// use tarid for temp space
+		for (tarid=0; tarid<=1000; tarid++)
+			delayXus(1000);
+
+		IapEreaseSector(0x0000);
+		IapEreaseSector(SSID_START_POS);
+		IapEreaseSector(HOST_START_POS);
+
+	} else {
+		LED_G = 0;
+		for (tarid=0; tarid<=1000; tarid++)
+			delayXus(1000);
+	}
+	esp8266_reset();
+	reboot();
+}
+
+void setting_state() {
+//	unsigned short i;
+	unsigned char client;
+	LED_R = 0;
+	blink(3, 1000);
+	init_esp8266(0, 1);
+
+	while(1) {
+		if (uart_waitforstring(CONST_STR("IPD,"), g_buf, sizeof(g_buf), 100000)) {
+			uart_getstring(g_buf, 1, 1000);
+			client = g_buf[0]; 
+			if (uart_waitforstring(CONST_STR("GET /"), g_buf, sizeof(g_buf), 10000)) {
+				uart_getstring(g_buf, 7, 10000);
+				
+				if (g_buf[0] == ' ') {
+					// GET /
+					response_web(client);
+				}  else if (strncmp(g_buf, "set.do?", 7)==0) {
+					// set.do
+					do_web_set(client);
+				}
+			}
+		}
+	}
+}
+
 void main() {
 //	unsigned char packet[20];
 	unsigned long i;
-	unsigned char xdata buf[40];
 	unsigned short pdata ver, devid, targetid;
 	unsigned char pdata len_1;
 	unsigned short pdata ret;
@@ -359,19 +475,18 @@ void main() {
 	targetid = (targetid<<8) + IapReadByte(0x0005);
 
 	if (get_profile(&ver, &devid, &targetid) == 0) {
-		LED_R = 0;
-		BEEP = 0;
-		while (1);
+		setting_state();
 	}
 
-	init_esp8266(2);
+	if (init_esp8266(2, 0) == 0)
+		setting_state();
 
 	while(1) {
 		for (i=0;i<100000;i++) {
 			// listen for packet
-			len_1 = esp8266_recv(buf, sizeof(buf) - 1);
+			len_1 = esp8266_recv(g_buf, sizeof(g_buf) - 1);
 			if (len_1) {
-				len_1 = process_master_packet(buf, len_1, ver, devid, &ret);
+				len_1 = process_master_packet(g_buf, len_1, ver, devid, &ret);
 				if (len_1) {
 					blink(1, 20);
 					hb_time = 0;
@@ -396,10 +511,10 @@ void main() {
 		}
 
 		blink(0, 20);
-		len_1 = construct_query_packet(buf, ver, devid, targetid);
-		if (esp8266_send(buf, len_1) == 0) {
+		len_1 = construct_query_packet(g_buf, ver, devid, targetid);
+		if (esp8266_send(g_buf, len_1, -1) == 0) {
 			//TODO: shall fix issue
-			init_esp8266(1);
+			init_esp8266(1, 0);
 		}
 		else
 			LED_R = 1;

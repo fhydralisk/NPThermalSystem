@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include "esp8266.h"
 #include "uart.h"
 #include "misc.h"
@@ -62,11 +63,12 @@ unsigned char esp8266_connect_udp(const unsigned char *host, const unsigned char
 
 	return 1;
 }
-
+#ifdef ESP8266_DISCONNECT
 unsigned char esp8266_disconnect() {
 	_send_close_cmd();
 	return _wait_for_ok(DEFAULT_WAIT);
 }
+#endif
 #ifdef UART_MODE
 unsigned char esp8266_enter_uartmode() {
 	unsigned char pkt[2];
@@ -86,6 +88,7 @@ unsigned char esp8266_exit_uartmode() {
 	return esp8266_test_at();		
 }
 #else
+
 void int2cstr(unsigned char *buf, int num) {
 	int i=0, tmp = num;
 	while (tmp) {
@@ -100,9 +103,13 @@ void int2cstr(unsigned char *buf, int num) {
 	}
 }
 
-unsigned char esp8266_send(const unsigned char* packet, int len) {
+unsigned char esp8266_send(const unsigned char* packet, int len, char client) {
 	unsigned char len_str[7];
 	uart_sendcstring("AT+CIPSEND=");
+	if (client >= 0 && client <= 4) {
+		uart_sendbyte(client+'0');
+		uart_sendbyte(',');
+	}
 	int2cstr(len_str, len);
 	uart_sendcstring(len_str);
 	uart_sendcstring("\r\n");
@@ -110,7 +117,6 @@ unsigned char esp8266_send(const unsigned char* packet, int len) {
 		return 0;
 	uart_sendstring(packet, len);
 	return _wait_for_ok(len/2*DEFAULT_WAIT);
-
 }
 
 unsigned char esp8266_recv(unsigned char *buf, int buf_len) {
@@ -136,17 +142,31 @@ void esp8266_reset() {
 	uart_sendcstring("AT+RST\r\n");
 }
 
-
-unsigned char esp8266_connect_wifi(const char *ssid, const char *password, unsigned char join_nextboot) {
+unsigned char esp8266_query_wifi_mode() {
 	unsigned char pkt[8];
 	uart_sendcstring("AT+CWMODE?\r\n");
-	if (uart_waitforstring(CONST_STR("CWMODE:1"), pkt, sizeof(pkt), DEFAULT_WAIT) == 0) {
-		uart_sendcstring("AT+CWMODE_DEF=1\r\n");
-		esp8266_reset();
-		if (!esp8266_wait_ready(WAIT_READY_TIMEOUT))
-			return 0;
-	}
+	if (uart_waitforstring(CONST_STR("CWMODE:"), pkt, sizeof(pkt), DEFAULT_WAIT))
+	    if (uart_getbyte(pkt)) {
+			pkt[0] -= '0';
+			_wait_for_ok(DEFAULT_WAIT);
+			return pkt[0];
+		}
 
+	return 255;
+}
+
+unsigned char esp8266_set_wifi_mode(unsigned char mode) {
+	if (mode > 0 && mode < 4) {
+		uart_sendcstring("AT+CWMODE_DEF=");
+		uart_sendbyte(mode + '0');
+		uart_sendcstring("\r\n");
+		//	esp8266_reset();
+		return _wait_for_ok(WAIT_READY_TIMEOUT);
+	}
+	return 0;
+}
+
+unsigned char esp8266_join_wifi(const char *ssid, const char *password, unsigned char join_nextboot) {;
 	if (join_nextboot) {
 		uart_sendcstring("AT+CWAUTOCONN=1\r\n");
 		_wait_for_ok(DEFAULT_WAIT);
@@ -154,6 +174,7 @@ unsigned char esp8266_connect_wifi(const char *ssid, const char *password, unsig
 	}
 	else
 		uart_sendcstring("AT+CWJAP_CUR=\"");
+
 	uart_sendcstring(ssid);
 	uart_sendcstring("\",\"");
 	uart_sendcstring(password);
@@ -161,6 +182,25 @@ unsigned char esp8266_connect_wifi(const char *ssid, const char *password, unsig
 
 	return _wait_for_ok(WAIT_IP_TIMEOUT * 2);
 }
+
+
+unsigned char esp8266_connect_wifi(const char *ssid, const char *password, unsigned char join_nextboot) {
+	unsigned char wifimode;
+	wifimode = esp8266_query_wifi_mode();
+	if (wifimode == 255)
+		goto error;
+	if (wifimode != 1) {
+		if (esp8266_set_wifi_mode(1) == 0)
+			goto error;
+	}
+
+	return esp8266_join_wifi(ssid, password, join_nextboot);
+
+error:
+	return 0;
+	
+}
+
 
 unsigned char esp8266_disconnect_wifi(unsigned char join_nextboot) {
 	if (join_nextboot)
@@ -174,3 +214,55 @@ unsigned char esp8266_disconnect_wifi(unsigned char join_nextboot) {
 
 }
 
+unsigned char esp8266_create_wifi(const char *ssid, const char *password, const char *ip, unsigned char create_nextboot) {
+	char postfix[6] = "_CUR";
+	if (create_nextboot) {
+		postfix[1] = 'D';
+		postfix[2] = 'E';
+		postfix[3] = 'F';
+	}
+	uart_sendcstring("AT+CWMODE");
+	uart_sendcstring(postfix);
+	uart_sendcstring("=2\r\n");
+	if (wait_for_ok(WAIT_READY_TIMEOUT) == 0)
+		goto error;
+
+	uart_sendcstring("AT+CWSAP");
+	uart_sendcstring(postfix);
+	uart_sendcstring("=\"");
+	uart_sendcstring(ssid);
+	uart_sendcstring("\",\"");
+	uart_sendcstring(password);
+	uart_sendcstring("\",3,");
+	if (password[0] == 0)
+		uart_sendcstring("0\r\n");
+	else
+		uart_sendcstring("3\r\n");
+
+	if (_wait_for_ok(WAIT_READY_TIMEOUT) == 0)
+		goto error;
+
+	uart_sendcstring("AT+CIPAP");
+	uart_sendcstring(postfix);
+	uart_sendcstring("=\"");
+	uart_sendcstring(ip);
+	uart_sendcstring("\"\r\n");
+
+	return _wait_for_ok(WAIT_READY_TIMEOUT);
+
+error:
+	return 0;
+}
+
+unsigned char esp8266_create_server(const char *port) {
+	uart_sendcstring("AT+CIPMUX=1\r\n");
+	if (_wait_for_ok(WAIT_IP_TIMEOUT) == 0)
+		goto error;
+	uart_sendcstring("AT+CIPSERVER=1,");
+	uart_sendcstring(port);
+	uart_sendcstring("\r\n");
+	return _wait_for_ok(WAIT_IP_TIMEOUT);
+
+error:
+	return 0;
+}

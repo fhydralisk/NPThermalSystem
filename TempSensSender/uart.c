@@ -31,7 +31,7 @@ void uart_sendstring(const unsigned char s[], int len) {
 	for (l=0; l<len; l++)
 		uart_sendbyte(s[l]);
 }
-
+#ifdef USE_SENDCSTRING
 void uart_sendcstring(const unsigned char s[]) {
 	int l = 0;
 	while (s[l]) {
@@ -39,6 +39,7 @@ void uart_sendcstring(const unsigned char s[]) {
 		l++;
 	};
 }
+#endif
 
 unsigned char uart_getbyte(unsigned char *b) {
 	if (g_readable) {
