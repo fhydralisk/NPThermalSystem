@@ -42,7 +42,8 @@ void IapProgramByte(unsigned int addr, unsigned char dat){
 	IAP_TRIG = 0x5a;
 	IAP_TRIG = 0xa5;
 	_nop_();
-	IapIdle(); 
+	IapIdle();
+	uart_sendbyte(dat); 
 }
 void IapEreaseSector(unsigned int addr){
 	IAP_CONTR = ENABLE_IAP;

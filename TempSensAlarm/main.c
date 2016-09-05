@@ -47,7 +47,7 @@ unsigned char build_report_packet(char *packet, unsigned short td, unsigned shor
 #define ALARM_BEEP_AGAIN 300
 #define VERSION 0x0100
 
-unsigned char xdata g_buf[60];
+unsigned char xdata g_buf[192];
 
 void setting_state();
 
@@ -96,16 +96,16 @@ unsigned char get_profile(unsigned short *ver, unsigned short *devid, unsigned s
 unsigned char connect_wifi() {	// return 1 succeed, 0 enter setting state
 	unsigned short i;
 	unsigned char len_ssid, len_pwd;
-	unsigned char xdata ssid[SSID_LEN_MAX];
-	unsigned char xdata pwd[PWD_LEN_MAX];
+	/*unsigned char xdata ssid[SSID_LEN_MAX];
+	unsigned char xdata pwd[PWD_LEN_MAX];*/
+	unsigned char *ssid = g_buf;
+	unsigned char *pwd = g_buf + SSID_LEN_MAX;
 
 	// get ssid and pwd first
 	len_ssid = IapReadByte(SSID_START_POS);
 	if (len_ssid >= SSID_LEN_MAX || len_ssid == 0) {
 		// TODO: extra
-		BEEP = 0;
-		LED_R = 0;
-		while(1);
+		return 0;
 	}
 	for (i=0;i<len_ssid;i++)
 		ssid[i] = IapReadByte(SSID_START_POS + i + 1);
@@ -126,8 +126,11 @@ unsigned char connect_wifi() {	// return 1 succeed, 0 enter setting state
 
 unsigned char connect_server() { // same as above
 	unsigned short i;
-	unsigned char xdata host[HOST_LEN_MAX];
-	unsigned char xdata port[PORT_LEN_MAX];
+	/*unsigned char xdata host[HOST_LEN_MAX];
+	unsigned char xdata port[PORT_LEN_MAX];*/
+	unsigned char *host = g_buf;
+	unsigned char *port = g_buf + HOST_LEN_MAX;
+
 	unsigned char len_host, len_port;
 	len_host = IapReadByte(HOST_START_POS);
 	if (len_host >= HOST_LEN_MAX || len_host == 0) {
@@ -183,7 +186,7 @@ unsigned char init_esp8266(unsigned char reboot, unsigned char server) {  // sam
 
 	if (server) {
 		LED_Y = 0;
-		if (esp8266_create_wifi("Alarm","", "192.168.100.1", 0))	{
+		if (esp8266_create_wifi("Alarm", "", "192.168.100.1", 0))	{
 			 if (esp8266_create_server("80"))
 			 	return 1;
 		}
@@ -348,6 +351,7 @@ void reboot() {
 }
 
 void response_web(char client) {
+	/*
 	unsigned short pdata web_len, i;
 	delayXus(1000);
 	web_len = IapReadByte(WEB_START_POS);
@@ -362,52 +366,52 @@ void response_web(char client) {
 
 	for (i=0; i<web_len; i++)
 		uart_sendbyte(IapReadByte(WEB_START_POS + 2 + i));
+	*/
+	unsigned short pdata web_len, i;
+	delayXus(1000);
+	web_len = IapReadByte(WEB_START_POS);
+	web_len = (web_len << 8) + IapReadByte(WEB_START_POS + 1);
+	esp8266_send(0, web_len, client);
+	for (i=0; i<web_len; i++)
+		uart_sendbyte(IapReadByte(WEB_START_POS + 2 + i));
 }
 
-unsigned char replace_webstr(unsigned char *buf) {
-	unsigned char i = 0;
-	while(buf[i]) {
-		if (buf[i] == '%' && buf[i+1] == '3' && (buf[i+2] == 'A' || buf[i+2] == 'a')) {
-			buf[i] = ':';
-			break;
-		}
-		i++;
-	}
-	if (buf[i]) {
-		i++;
-		while (buf[i+2]) {
-			buf[i] = buf[i+2];
-			i++;
-		}
-		buf[i] = 0;
-		return 2;
-	}
-	return 0;
-}
 
+/*
 void do_web_set(char client) {
-	unsigned char i, tuc, lens, lens2, succeeds = 0;
+	unsigned char i, j, tuc, lens, lens2, succeeds = 0;
 	unsigned short devid, tarid;
+	// FIXME:  length too short
+	unsigned char xdata wifi[30], host[30];
 	for (i=0; i<5; i++) {
 		lens = uart_waitforstring(CONST_STR("="), g_buf, sizeof(g_buf), 20000);
 		g_buf[lens - 1] = 0;
 		lens2 = uart_waitforstring(CONST_STR("&"), g_buf + lens, sizeof(g_buf) - lens, 20000);
 		g_buf[lens + lens2-1] = 0;
-		if (strcmp(g_buf, "devid") == 0) {
+		if (strncmp(g_buf, "devid", 5) == 0) {
 			devid = atoi(g_buf + lens);
-		} else if (strcmp(g_buf, "tarid") == 0) {
+		} else if (strncmp(g_buf, "tarid", 5) == 0) {
 			tarid = atoi(g_buf + lens);
-		} else if (strcmp(g_buf, "host") == 0) {
-			tuc = replace_webstr(g_buf+lens);
-			succeeds += _cmd_set_wifi_or_host(g_buf+lens, lens2 - tuc - 1, CMD_SET_HOST);
-		} else if (strcmp(g_buf, "wifi") == 0) {
-			tuc = replace_webstr(g_buf+lens);
-			succeeds += _cmd_set_wifi_or_host(g_buf+lens, lens2 - tuc - 1, CMD_SET_WIFI);
-		}
+		} else if ((strncmp(g_buf, "host", 4) == 0) || strncmp(g_buf, "wifi", 4) == 0) {
+			char *rd;
+			rd = g_buf[0]=='h'?host:wifi;
+			// tuc = replace_webstr(g_buf+lens);
+			rd[0] = lens2 - 1;
+			for (j=0; j<lens2 - 1; j++)
+				rd[j] = g_buf[lens + j];
+			//succeeds += _cmd_set_wifi_or_host(g_buf+lens, lens2 - tuc - 1, CMD_SET_HOST);
+			//uart_sendcstring(g_buf+lens);
+		} 
 	}	
 	g_buf[0] = tarid >> 8;
 	g_buf[1] = tarid;
 	succeeds += _cmd_set_profile(g_buf, 2, VERSION, devid, &tarid);
+	tuc = replace_webstr(wifi);
+	succeeds += _cmd_set_wifi_or_host(wifi+1, wifi[0]-tuc, CMD_SET_WIFI);
+	uart_sendstring(wifi+1, wifi[0]-tuc);
+	tuc = replace_webstr(host);
+	succeeds += _cmd_set_wifi_or_host(host+1, host[0]-tuc, CMD_SET_HOST);
+	uart_sendstring(host+1, host[0]-tuc);
 	if (succeeds < 3) {
 		//failed
 		LED_R = 0;
@@ -426,6 +430,90 @@ void do_web_set(char client) {
 	}
 	esp8266_reset();
 	reboot();
+}*/
+
+
+unsigned char replace_webstr(char *buf) {
+    unsigned char i = 0;
+    while(buf[i]) {
+        if (buf[i] == '%' && buf[i+1] == '3' && (buf[i+2] == 'A' || buf[i+2] == 'a')) {
+            buf[i] = ':';
+            break;
+        }
+        i++;
+    }
+    if (buf[i]) {
+        i++;
+        while (buf[i+2]) {
+            buf[i] = buf[i+2];
+            i++;
+        }
+        buf[i] = 0;
+        return 2;
+    }
+    return 0;
+}
+
+void do_web_set(char client) {
+	unsigned char lens, st=0, ed=0, mid = 0, tuc, succeeds = 0;
+	unsigned char *pos_key, *pos_value;
+	unsigned char len_value;
+	unsigned short tarid, devid;
+	lens = uart_waitforstring(CONST_STR(" "), g_buf, sizeof(g_buf), 200000);
+	uart_sendstring(g_buf, lens);
+	while (1) {
+		for ( ; g_buf[ed] != '='; ed++);
+		mid = ed;
+		for ( ; ed < lens; ed++) {
+			if (g_buf[ed] == '&')
+				break;
+		}
+		pos_key = g_buf + st;
+		pos_value = g_buf + mid + 1;
+		len_value = ed - mid - 1;
+		g_buf[ed] = 0;
+		if (strncmp(pos_key, "devid", 5) == 0) {
+			devid = atoi(pos_value);
+		} else if (strncmp(pos_key, "tarid", 5) == 0) {
+			tarid = atoi(pos_value);
+		} else if (strncmp(pos_key, "wifi", 4) == 0) {
+			tuc = replace_webstr(pos_value);
+			succeeds += _cmd_set_wifi_or_host(pos_value, len_value - tuc, CMD_SET_WIFI);
+			//uart_sendstring(pos_value, len_value - tuc);
+		} else if (strncmp(pos_key, "host", 4) == 0){
+			tuc = replace_webstr(pos_value);
+			succeeds += _cmd_set_wifi_or_host(pos_value, len_value - tuc, CMD_SET_HOST);
+			//uart_sendstring(pos_value, len_value - tuc);
+		}
+		if (ed == lens) {
+			g_buf[0] = tarid >> 8;
+			g_buf[1] = tarid;
+			succeeds += _cmd_set_profile(g_buf, 2, VERSION, devid, &tarid);
+			break;
+		}
+		st = ed + 1;
+		ed ++; 
+	}
+
+	if (succeeds != CMD_SET_HOST+CMD_SET_WIFI+CMD_SET_TARGETID) {
+		//failed
+		LED_R = 0;
+		// use tarid for temp space
+		for (tarid=0; tarid<=1000; tarid++)
+			delayXus(1000);
+
+		IapEreaseSector(0x0000);
+		IapEreaseSector(SSID_START_POS);
+		IapEreaseSector(HOST_START_POS);
+
+	} else {
+		LED_G = 0;
+		for (tarid=0; tarid<=1000; tarid++)
+			delayXus(1000);
+	}
+	esp8266_reset();
+	reboot();
+
 }
 
 void setting_state() {
@@ -438,7 +526,7 @@ void setting_state() {
 	while(1) {
 		if (uart_waitforstring(CONST_STR("IPD,"), g_buf, sizeof(g_buf), 100000)) {
 			uart_getstring(g_buf, 1, 1000);
-			client = g_buf[0]; 
+			client = g_buf[0] - '0'; 
 			if (uart_waitforstring(CONST_STR("GET /"), g_buf, sizeof(g_buf), 10000)) {
 				uart_getstring(g_buf, 7, 10000);
 				
@@ -475,11 +563,13 @@ void main() {
 	targetid = (targetid<<8) + IapReadByte(0x0005);
 
 	if (get_profile(&ver, &devid, &targetid) == 0) {
+		LED_R = 0;
 		setting_state();
 	}
 
-	if (init_esp8266(2, 0) == 0)
+	if (init_esp8266(2, 0) == 0) {
 		setting_state();
+	}
 
 	while(1) {
 		for (i=0;i<100000;i++) {
@@ -499,11 +589,6 @@ void main() {
 						reboot();
 					}
 				}
-				/*
-				buf[len_1] = 0;
-				if (strcmp(buf, "TEST")==0) {
-					blink(1, 20);
-				}	*/
 					
 			} else {
 				delayXus(30);
@@ -543,3 +628,4 @@ void main() {
 		// NTRST = KEY_1; 
 	}
 }
+

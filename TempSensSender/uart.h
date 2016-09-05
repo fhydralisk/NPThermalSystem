@@ -8,10 +8,7 @@
 void uart_init();
 void uart_sendbyte(const unsigned char b);
 void uart_sendstring(const unsigned char s[], int len);
-
-#ifdef USE_SENDCSTRING
 void uart_sendcstring(const unsigned char s[]);
-#endif
 						   
 unsigned char uart_getbyte(unsigned char *b);
 unsigned char uart_getstring(unsigned char *s, int len, long loop_timeout);
